@@ -1,0 +1,84 @@
+# Compila la APK de "Registro de Riesgos Santa Marta" en los servidores de
+# GitHub (gratis para repositorios públicos y con minutos incluidos en privados).
+#
+# Resultado: pestaña "Actions" → ejecución → sección "Artifacts" → app-release
+#
+# Secretos requeridos (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL        URL del proyecto Supabase
+#   SUPABASE_ANON_KEY   llave pública anon
+# Opcionales: MAP_TILE_URL, MAP_ACCESS_TOKEN, MAP_ATTRIBUTION, AI_CLASSIFIER_ENABLED
+name: Generar APK
+
+on:
+  workflow_dispatch:        # botón "Run workflow"
+  push:
+    branches: [main, master]
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Crear env.json desde los secretos
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          MAP_TILE_URL: ${{ secrets.MAP_TILE_URL }}
+          MAP_ACCESS_TOKEN: ${{ secrets.MAP_ACCESS_TOKEN }}
+          MAP_ATTRIBUTION: ${{ secrets.MAP_ATTRIBUTION }}
+          AI_CLASSIFIER_ENABLED: ${{ secrets.AI_CLASSIFIER_ENABLED }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::warning::Faltan los secretos SUPABASE_URL / SUPABASE_ANON_KEY. La APK se generará, pero mostrará 'Falta la configuración del servidor'."
+          fi
+          jq -n \
+            --arg url "$SUPABASE_URL" \
+            --arg key "$SUPABASE_ANON_KEY" \
+            --arg tiles "${MAP_TILE_URL:-https://tile.openstreetmap.org/{z}/{x}/{y}.png}" \
+            --arg token "$MAP_ACCESS_TOKEN" \
+            --arg attr "${MAP_ATTRIBUTION:-© colaboradores de OpenStreetMap}" \
+            --arg ai "${AI_CLASSIFIER_ENABLED:-false}" \
+            '{SUPABASE_URL:$url, SUPABASE_ANON_KEY:$key, MAP_TILE_URL:$tiles,
+              MAP_ACCESS_TOKEN:$token, MAP_ATTRIBUTION:$attr, AI_CLASSIFIER_ENABLED:$ai}' > env.json
+
+      - name: Dependencias
+        run: flutter pub get
+
+      - name: Preparar proyecto Android
+        run: dart run tool/setup_android.dart
+
+      - name: Análisis estático (falla solo con errores)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Pruebas unitarias
+        run: flutter test
+        continue-on-error: true
+
+      - name: Compilar APK
+        run: flutter build apk --release --dart-define-from-file=env.json
+
+      - name: Publicar APK para descarga
+        uses: actions/upload-artifact@v4
+        with:
+          name: registro-riesgos-santa-marta-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
